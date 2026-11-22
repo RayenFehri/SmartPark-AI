@@ -8,3 +8,5 @@ results/*.csv
 .env
 # Ne jamais committer de clé API
 secrets/
+APDescription.txt
+MTPs-Main-Container.txt

@@ -5,21 +5,24 @@ Système multi-agent JADE pour l'allocation dynamique et négociée de places de
 
 ## Prérequis
 - JDK 17, Maven 3.9+, Git
+- JADE 4.6.1 est récupéré automatiquement depuis Maven Central (`de.enflexit.jade`)
 - (plus tard) variable d'environnement `MISTRAL_API_KEY`
 
-## Lancement (étape 0)
+## Commandes
+    mvn test                                               # tests unitaires (étape 1)
     mvn compile exec:java                                  # plateforme + HelloAgent
     mvn compile exec:java -Dexec.args="--gui"              # avec le RMA
     mvn compile exec:java -Dexec.args="--gui --sniffer"    # avec RMA et Sniffer
 
-Lancement direct de JADE :
-
-    mvn compile exec:java -Dexec.mainClass=jade.Boot -Dexec.args="-gui -agents hello:smartparking.agents.HelloAgent"
-
-## Si JADE ne se résout pas depuis Maven
-Télécharger JADE 4.6.0 sur https://jade.tilab.com, puis :
-
-    mvn install:install-file -Dfile=jade.jar -DgroupId=com.tilab.jade -DartifactId=jade -Dversion=4.6.0 -Dpackaging=jar
-
 ## Structure
-agents/ · behaviours/ · models/ · services/ · utils/ · config/ · results/ · docs/
+- `agents/` : agents JADE
+- `behaviours/` : comportements JADE
+- `models/` : objets de données et contrats JSON (records Java)
+- `services/` : logique métier en Java pur, sans import jade.* (SimClock, ScenarioLoader, ...)
+- `utils/` : Ontology, EventTypes, JsonUtil, Config
+- `config/` : parking.json et scénarios S1 à S4
+- `results/` : CSV générés (ignorés par Git)
+
+## Contrats figés (étape 1)
+Modèles de `models/`, constantes de `utils/Ontology` et `utils/EventTypes`, interface `services/NlParser`.
+Toute modification se décide à deux.

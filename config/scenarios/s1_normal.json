@@ -1,0 +1,14 @@
+{
+  "name": "S1",
+  "seed": 1,
+  "vehicleCount": 10,
+  "arrivalWindowSimMin": 120,
+  "electricRatio": 0.2,
+  "pmrRatio": 0.1,
+  "nearExitRatio": 0.3,
+  "minDurationHours": 1.0,
+  "maxDurationHours": 4.0,
+  "minBudget": 6.0,
+  "maxBudget": 20.0,
+  "faults": []
+}

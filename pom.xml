@@ -19,7 +19,7 @@
   </properties>
 
   <dependencies>
-    <!-- Plateforme multi-agent -->
+    <!-- Plateforme multi-agent : JADE 4.6.1 (code original Tilab) publié sur Maven Central -->
     <dependency>
       <groupId>de.enflexit.jade</groupId>
       <artifactId>de.enflexit.jade</artifactId>

@@ -4,22 +4,33 @@ import jade.core.Profile;
 import jade.core.ProfileImpl;
 import jade.core.Runtime;
 import jade.wrapper.AgentContainer;
-import jade.wrapper.StaleProxyException;
+import smartparking.models.ParkingConfig;
+import smartparking.services.SimClock;
+import smartparking.utils.Config;
 
 import java.util.Arrays;
 import java.util.List;
 
 /**
- * Point d'entrée : démarre le Main Container JADE puis les agents.
+ * Point d'entrée : charge la configuration, installe l'horloge de simulation,
+ * démarre le Main Container JADE puis les agents.
  * Options : --gui (ouvre le RMA), --sniffer (ouvre le Sniffer).
- * Étape 0 : ne lance que HelloAgent. Les vrais agents seront ajoutés aux étapes suivantes.
+ * Étapes 0-1 : seul HelloAgent est lancé. Les vrais agents seront ajoutés aux étapes suivantes.
  */
 public class Launcher {
 
-    public static void main(String[] args) throws StaleProxyException {
+    public static void main(String[] args) throws Exception {
         List<String> options = Arrays.asList(args);
         boolean gui = options.contains("--gui");
         boolean sniffer = options.contains("--sniffer");
+
+        ParkingConfig config = Config.load();
+        System.out.println("[Launcher] configuration chargée : " + config.zones().size() + " zones, "
+                + config.totalSlots() + " places, stratégie " + config.strategy());
+
+        SimClock clock = new SimClock(config.timeScale());
+        SimClock.install(clock);
+        clock.start();
 
         Runtime runtime = Runtime.instance();
         Profile profile = new ProfileImpl();

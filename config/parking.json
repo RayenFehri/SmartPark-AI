@@ -1,0 +1,25 @@
+{
+  "strategy": "CNP_OPTIMIZED",
+  "seed": 1,
+  "timeScale": 20.0,
+  "cnpTimeoutMs": 2000,
+  "holdTtlMs": 5000,
+  "heartbeatMs": 2000,
+  "downAfterMissed": 3,
+  "queueMaxWaitSimMin": 30,
+  "pricing": {
+    "thresholds": [0.4, 0.7, 0.9],
+    "surcharges": [0.0, 0.1, 0.2, 0.3]
+  },
+  "weights": {
+    "default":     { "wD": 0.4, "wP": 0.4, "wW": 0.2 },
+    "nearExit":    { "wD": 0.5, "wP": 0.3, "wW": 0.2 },
+    "tightBudget": { "wD": 0.3, "wP": 0.5, "wW": 0.2 }
+  },
+  "zones": [
+    { "zoneId": "ZoneStandard", "type": "STANDARD", "slotCount": 20, "basePricePerHour": 2.0, "minDistance": 60.0, "maxDistance": 150.0 },
+    { "zoneId": "ZoneElectric", "type": "ELECTRIC", "slotCount": 8,  "basePricePerHour": 3.0, "minDistance": 40.0, "maxDistance": 100.0 },
+    { "zoneId": "ZonePMR",      "type": "PMR",      "slotCount": 4,  "basePricePerHour": 2.0, "minDistance": 10.0, "maxDistance": 30.0 },
+    { "zoneId": "ZonePremium",  "type": "PREMIUM",  "slotCount": 8,  "basePricePerHour": 4.0, "minDistance": 5.0,  "maxDistance": 25.0 }
+  ]
+}

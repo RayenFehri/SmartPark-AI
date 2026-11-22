@@ -1,0 +1,14 @@
+{
+  "name": "S2",
+  "seed": 1,
+  "vehicleCount": 30,
+  "arrivalWindowSimMin": 15,
+  "electricRatio": 0.25,
+  "pmrRatio": 0.1,
+  "nearExitRatio": 0.4,
+  "minDurationHours": 1.0,
+  "maxDurationHours": 4.0,
+  "minBudget": 6.0,
+  "maxBudget": 20.0,
+  "faults": []
+}

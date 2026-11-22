@@ -1,0 +1,14 @@
+{
+  "name": "S3",
+  "seed": 1,
+  "vehicleCount": 60,
+  "arrivalWindowSimMin": 30,
+  "electricRatio": 0.25,
+  "pmrRatio": 0.1,
+  "nearExitRatio": 0.4,
+  "minDurationHours": 3.0,
+  "maxDurationHours": 6.0,
+  "minBudget": 10.0,
+  "maxBudget": 30.0,
+  "faults": []
+}
