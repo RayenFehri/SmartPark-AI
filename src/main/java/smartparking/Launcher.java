@@ -7,7 +7,6 @@ import jade.wrapper.AgentContainer;
 import smartparking.models.ParkingConfig;
 import smartparking.services.SimClock;
 import smartparking.utils.Config;
-
 import java.util.Arrays;
 import java.util.List;
 
@@ -39,10 +38,19 @@ public class Launcher {
 
         AgentContainer container = runtime.createMainContainer(profile);
 
-        container.createNewAgent("hello", "smartparking.agents.HelloAgent", null).start();
-
         if (sniffer) {
-            container.createNewAgent("sniffer", "jade.tools.sniffer.Sniffer", new Object[] {"hello"}).start();
+            container.createNewAgent("sniffer", "jade.tools.sniffer.Sniffer",
+                    new Object[] {"ZoneStandard;ZoneElectric;ZonePMR;ZonePremium;tester"}).start();
         }
+
+        for (ParkingConfig.ZoneConfig zone : config.zones()) {
+            container.createNewAgent(zone.zoneId(), "smartparking.agents.ZoneAgent",
+                    new Object[] {zone.zoneId()}).start();
+        }
+
+        if (options.contains("--test-cfp")) {
+            container.createNewAgent("tester", "smartparking.agents.TestInitiatorAgent", null).start();
+        }
+
     }
 }
