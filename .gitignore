@@ -1,0 +1,10 @@
+target/
+.idea/
+*.iml
+.vscode/
+results/*.csv
+*.log
+*.env
+.env
+# Ne jamais committer de clé API
+secrets/
