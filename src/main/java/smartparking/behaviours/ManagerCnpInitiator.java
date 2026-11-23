@@ -12,6 +12,7 @@ import smartparking.models.ParkingRequest;
 import smartparking.models.Proposal;
 import smartparking.models.Refusal;
 import smartparking.models.RefusalReason;
+import smartparking.models.Strategy;
 import smartparking.services.AllocationScorer;
 import smartparking.services.ZoneState;
 import smartparking.utils.JsonUtil;
@@ -41,7 +42,11 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
     public interface Outcomes {
         void trace(DecisionTrace trace);
 
-        void allocated(Allocation allocation);
+        /** wasteful : la zone attribuée est une zone spécialisée dont le véhicule n'avait pas besoin. */
+        void allocated(Allocation allocation, boolean wasteful);
+
+        /** Un ACCEPT_PROPOSAL a échoué : la place n'était plus réservée à ce véhicule (§10). */
+        void conflict(String requestId, String zoneId);
 
         void refused(String requestId, RefusalReason reason);
 
@@ -49,7 +54,8 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
     }
 
     /** Services partagés par toutes les négociations du Manager. */
-    public record Deps(AllocationScorer scorer,
+    public record Deps(Strategy strategy,
+                       AllocationScorer scorer,
                        Supplier<List<AID>> zoneFinder,
                        Supplier<Set<String>> downZones,
                        Outcomes outcomes,
@@ -123,8 +129,9 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
             }
         }
 
-        AllocationScorer.Result result = deps.scorer().evaluate(request, proposals, refusals,
-                deps.downZones().get());
+        AllocationScorer.Result result = deps.strategy() == Strategy.FIRST_AVAILABLE
+                ? deps.scorer().evaluateFirstAvailable(request, proposals, refusals, deps.downZones().get())
+                : deps.scorer().evaluate(request, proposals, refusals, deps.downZones().get());
         deps.outcomes().trace(result.trace());
         log(result.trace().summary());
 
@@ -169,7 +176,8 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
                     c.slotId(), c.price(), bestScore, c.startSimMin(), c.endSimMin());
             finished = true;
             sendToVehicle(myAgent, vehicleRequest, ACLMessage.INFORM, JsonUtil.toJson(allocation));
-            deps.outcomes().allocated(allocation);
+            deps.outcomes().allocated(allocation,
+                    deps.scorer().wastePenalty(request, best.zoneType()) >= 1.0);
         } catch (JsonSyntaxException e) {
             fail("confirmation illisible de la zone");
         }
@@ -183,6 +191,7 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
             return;
         }
         finished = true;
+        deps.outcomes().conflict(request.requestId(), failure.getSender().getLocalName());
         if (attempt < MAX_ATTEMPTS) {
             log("ÉCHEC de " + failure.getSender().getLocalName() + " (" + failure.getContent()
                     + ") -> nouvelle négociation");

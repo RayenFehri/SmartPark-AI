@@ -7,6 +7,7 @@ import jade.wrapper.AgentContainer;
 import smartparking.models.ParkingConfig;
 import smartparking.models.ParkingRequest;
 import smartparking.models.Scenario;
+import smartparking.models.Strategy;
 import smartparking.services.ScenarioLoader;
 import smartparking.services.SimClock;
 import smartparking.utils.Config;
@@ -19,7 +20,9 @@ import java.util.List;
  * Point d'entrée : charge la configuration, démarre le Main Container JADE, puis les agents
  * (zones, Manager, véhicules du scénario).
  * Options : --gui (ouvre le RMA), --sniffer (ouvre le Sniffer),
- *           --scenario <fichier> (par défaut config/scenarios/s1_normal.json).
+ *           --scenario <fichier> (par défaut config/scenarios/s1_normal.json),
+ *           --strategy A|B (A = FIRST_AVAILABLE, B = CNP_OPTIMIZED ; par défaut celle de parking.json),
+ *           --auto-exit (quitte quand l'exécution est terminée, après l'export CSV).
  */
 public class Launcher {
 
@@ -33,9 +36,17 @@ public class Launcher {
         String scenarioPath = scenarioIndex >= 0 && scenarioIndex + 1 < options.size()
                 ? options.get(scenarioIndex + 1) : DEFAULT_SCENARIO;
 
+        boolean autoExit = options.contains("--auto-exit");
+        int strategyIndex = options.indexOf("--strategy");
+        String strategyOption = strategyIndex >= 0 && strategyIndex + 1 < options.size()
+                ? options.get(strategyIndex + 1) : null;
+
         ParkingConfig config = Config.load();
+        Strategy strategy = resolveStrategy(strategyOption, config.strategy());
+        // lu par le ParkingManagerAgent : l'option remplace la valeur du fichier de configuration
+        System.setProperty("smartpark.strategy", strategy.name());
         System.out.println("[Launcher] configuration chargée : " + config.zones().size() + " zones, "
-                + config.totalSlots() + " places, stratégie " + config.strategy());
+                + config.totalSlots() + " places, stratégie " + strategy);
 
         Scenario scenario = ScenarioLoader.load(Path.of(scenarioPath));
         List<ParkingRequest> requests = ScenarioLoader.generate(scenario);
@@ -60,6 +71,9 @@ public class Launcher {
                     new Object[] {watched.toString()}).start();
         }
 
+        container.createNewAgent("monitor", "smartparking.agents.MonitorAgent",
+                new Object[] {strategy.name(), scenario.name(), scenario.seed(), requests.size(), autoExit}).start();
+
         for (ParkingConfig.ZoneConfig zone : config.zones()) {
             container.createNewAgent(zone.zoneId(), "smartparking.agents.ZoneAgent",
                     new Object[] {zone.zoneId()}).start();
@@ -73,6 +87,25 @@ public class Launcher {
         for (ParkingRequest request : requests) {
             container.createNewAgent(request.vehicleId(), "smartparking.agents.VehicleAgent",
                     new Object[] {request}).start();
+        }
+    }
+
+    /** A et B sont des raccourcis ; sans option, la stratégie du fichier de configuration est conservée. */
+    private static Strategy resolveStrategy(String option, Strategy fromConfig) {
+        if (option == null) {
+            return fromConfig;
+        }
+        switch (option.toUpperCase()) {
+            case "A":
+                return Strategy.FIRST_AVAILABLE;
+            case "B":
+                return Strategy.CNP_OPTIMIZED;
+            default:
+                try {
+                    return Strategy.valueOf(option.toUpperCase());
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException("stratégie inconnue : " + option + " (A, B ou un nom complet)");
+                }
         }
     }
 }

@@ -60,6 +60,7 @@ public class MetricsCollector {
     private int unneededSpecialized;
     private int doubleAllocations;
     private double revenue;
+    private double latestEndSimMin;
 
     /** Enregistre un événement. Les événements inconnus ou mal formés sont ignorés. */
     public synchronized void onEvent(Event event) {
@@ -103,6 +104,7 @@ public class MetricsCollector {
             doubleAllocations++;
         }
         slotOccupiedUntil.put(row.slotId, number(details, "endSimMin"));
+        latestEndSimMin = Math.max(latestEndSimMin, number(details, "endSimMin"));
     }
 
     private void onHeartbeat(Event event) {
@@ -120,6 +122,22 @@ public class MetricsCollector {
         if (usable > 0) {
             occupancySamples.add((double) used / usable);
         }
+    }
+
+    /** Nombre de demandes ayant reçu une décision finale (attribuée, refusée ou en échec). */
+    public synchronized int decidedCount() {
+        int decided = 0;
+        for (Row row : rows.values()) {
+            if (!"PENDING".equals(row.outcome)) {
+                decided++;
+            }
+        }
+        return decided;
+    }
+
+    /** Instant simulé où se termine le dernier stationnement attribué (0 si aucune attribution). */
+    public synchronized double latestEndSimMin() {
+        return latestEndSimMin;
     }
 
     public synchronized Summary summary(String scenario, String strategy, long seed) {

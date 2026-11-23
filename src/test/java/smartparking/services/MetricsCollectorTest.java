@@ -140,4 +140,18 @@ class MetricsCollectorTest {
         assertEquals(3, summaryLines.size());   // un seul en-tête, deux exécutions
         assertEquals(MetricsCollector.summaryHeader(), summaryLines.get(0));
     }
+
+    @Test
+    void decidedCountAndLatestEndTrackTheProgressOfTheRun() {
+        MetricsCollector m = new MetricsCollector();
+        m.onEvent(received("R1", 0, 1.0));
+        m.onEvent(received("R2", 0, 2.0));
+        assertEquals(0, m.decidedCount());
+
+        m.onEvent(allocated("R1", 5, 1.0, "A-01", 4.0, 1.0, 61.0, false));
+        m.onEvent(event(EventTypes.REFUSED, "R2", null, 6, 2.0, "{\"reason\":\"ZONE_FULL\"}"));
+
+        assertEquals(2, m.decidedCount());
+        assertEquals(61.0, m.latestEndSimMin(), 1e-9);
+    }
 }

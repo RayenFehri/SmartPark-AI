@@ -11,14 +11,17 @@ import jade.domain.FIPAException;
 import jade.domain.FIPANames;
 import jade.lang.acl.ACLMessage;
 import jade.lang.acl.MessageTemplate;
+import smartparking.behaviours.EventReporter;
 import smartparking.behaviours.ManagerCnpInitiator;
 import smartparking.models.Allocation;
 import smartparking.models.DecisionTrace;
 import smartparking.models.ParkingConfig;
 import smartparking.models.ParkingRequest;
 import smartparking.models.RefusalReason;
+import smartparking.models.Strategy;
 import smartparking.services.AllocationScorer;
 import smartparking.utils.Config;
+import smartparking.utils.EventTypes;
 import smartparking.utils.JsonUtil;
 import smartparking.utils.Ontology;
 
@@ -64,11 +67,19 @@ public class ParkingManagerAgent extends Agent {
             return;
         }
 
-        deps = new ManagerCnpInitiator.Deps(new AllocationScorer(config), this::findZones,
+        // la stratégie du fichier de configuration peut être remplacée par l'option --strategy du Launcher
+        Strategy strategy = Strategy.valueOf(
+                System.getProperty("smartpark.strategy", config.strategy().name()));
+        if (strategy == Strategy.CNP_LLM) {
+            System.err.println("[Manager] la stratégie CNP_LLM n'existe pas encore (étape 7) : CNP_OPTIMIZED utilisée");
+            strategy = Strategy.CNP_OPTIMIZED;
+        }
+
+        deps = new ManagerCnpInitiator.Deps(strategy, new AllocationScorer(config), this::findZones,
                 () -> downZones, new ManagerOutcomes(), config.cnpTimeoutMs());
 
         addBehaviour(new RequestListener());
-        System.out.println("[Manager] prêt, stratégie " + config.strategy());
+        System.out.println("[Manager] prêt, stratégie " + strategy);
     }
 
     /** Écoute les REQUEST des véhicules : répond AGREE, puis laisse le CNP répondre INFORM/REFUSE/FAILURE. */
@@ -97,6 +108,9 @@ public class ParkingManagerAgent extends Agent {
                 System.out.println("[Manager] demande illisible -> NOT_UNDERSTOOD");
                 return;
             }
+
+            EventReporter.report(myAgent, EventTypes.REQUEST_SENT, request.requestId(), null,
+                    Map.of("vehicleId", request.vehicleId(), "arrivalSimMin", request.arrivalSimMin()));
 
             ACLMessage agree = message.createReply();
             agree.setPerformative(ACLMessage.AGREE);
@@ -153,7 +167,22 @@ public class ParkingManagerAgent extends Agent {
         }
 
         @Override
-        public void allocated(Allocation a) {
+        public void conflict(String requestId, String zoneId) {
+            EventReporter.report(ParkingManagerAgent.this, EventTypes.CONFLICT, requestId, zoneId, null);
+        }
+
+        @Override
+        public void allocated(Allocation a, boolean wasteful) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("zoneId", a.zoneId());
+            details.put("slotId", a.slotId());
+            details.put("price", a.finalPrice());
+            details.put("score", a.score());
+            details.put("startSimMin", a.startSimMin());
+            details.put("endSimMin", a.endSimMin());
+            details.put("wasteful", wasteful);
+            EventReporter.report(ParkingManagerAgent.this, EventTypes.ALLOCATED, a.requestId(), a.zoneId(), details);
+
             Double busyUntil = slotOccupiedUntil.get(a.slotId());
             if (busyUntil != null && busyUntil > a.startSimMin() + 1e-6) {
                 doubleAllocations++;
@@ -171,6 +200,8 @@ public class ParkingManagerAgent extends Agent {
         @Override
         public void refused(String requestId, RefusalReason reason) {
             refusedCount++;
+            EventReporter.report(ParkingManagerAgent.this, EventTypes.REFUSED, requestId, null,
+                    Map.of("reason", reason.name()));
             System.out.println("[Manager] " + requestId + " -> REFUSÉE (" + reason + ")");
             printTally();
         }
@@ -178,6 +209,8 @@ public class ParkingManagerAgent extends Agent {
         @Override
         public void failed(String requestId, String why) {
             failedCount++;
+            EventReporter.report(ParkingManagerAgent.this, EventTypes.FAILED, requestId, null,
+                    Map.of("reason", why));
             System.out.println("[Manager] " + requestId + " -> ÉCHEC (" + why + ")");
             printTally();
         }

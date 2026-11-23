@@ -26,11 +26,14 @@ public class ZoneCnpResponder extends ContractNetResponder {
     private final ZoneState zone;
     private final long holdTtlMs;
     private final String name;
+    private final Runnable onStateChange;
 
-    public ZoneCnpResponder(Agent agent, ZoneState zone, long holdTtlMs) {
+    /** onStateChange est appelé après chaque changement d'état des places (hold, confirmation, libération). */
+    public ZoneCnpResponder(Agent agent, ZoneState zone, long holdTtlMs, Runnable onStateChange) {
         super(agent, template());
         this.zone = zone;
         this.holdTtlMs = holdTtlMs;
+        this.onStateChange = onStateChange;
         this.name = zone.getZoneId();
     }
 
@@ -63,6 +66,7 @@ public class ZoneCnpResponder extends ContractNetResponder {
             log(String.format("CFP %s -> PROPOSE %s, prix %.2f, occupation %.0f %%",
                     request.requestId(), outcome.proposal().slotId(), outcome.proposal().totalPrice(),
                     outcome.proposal().occupancyRate() * 100));
+            onStateChange.run();
         } else {
             reply.setPerformative(ACLMessage.REFUSE);
             reply.setContent(JsonUtil.toJson(outcome.refusal()));
@@ -92,6 +96,7 @@ public class ZoneCnpResponder extends ContractNetResponder {
         inform.setOntology(Ontology.NAME);
         inform.setLanguage(Ontology.LANGUAGE);
         inform.setContent(JsonUtil.toJson(c));
+        onStateChange.run();
         return inform;
     }
 
@@ -102,6 +107,7 @@ public class ZoneCnpResponder extends ContractNetResponder {
         boolean released = zone.release(request.requestId());
         log(String.format("REJECT %s -> %s", request.requestId(),
                 released ? "place libérée" : "rien à libérer (déjà expirée)"));
+        onStateChange.run();
     }
 
     private ParkingRequest readRequest(ACLMessage message) {
