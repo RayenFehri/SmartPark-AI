@@ -191,4 +191,47 @@ class AllocationScorerTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new AllocationScorer(Map.of("default", new ParkingConfig.Weights(0.4, 0.4, 0.2)), 150.0, 2.0));
     }
+
+    // --- stratégie A : FIRST_AVAILABLE ---
+
+    private static final AllocationScorer FIRST_AVAILABLE_SCORER = new AllocationScorer(WEIGHTS, 150.0, 2.0,
+            List.of("ZoneStandard", "ZoneElectric", "ZonePMR", "ZonePremium"));
+
+    @Test
+    void firstAvailableFollowsZoneOrderWhileTheScoreWouldPickAnotherZone() {
+        ParkingRequest request = standard(2.0, 20.0, PreferredLocation.NEAR_EXIT);
+        List<Proposal> offers = List.of(PREMIUM_OFFER, STANDARD_OFFER);
+
+        // stratégie B : Premium (proche de la sortie, demandée) ; stratégie A : première zone de la liste
+        assertEquals("ZonePremium", SCORER.evaluate(request, offers, List.of(), Set.of()).best().zoneId());
+        AllocationScorer.Result a = FIRST_AVAILABLE_SCORER.evaluateFirstAvailable(request, offers, List.of(), Set.of());
+        assertEquals("ZoneStandard", a.best().zoneId());
+        assertEquals("SELECTED", a.trace().evaluations().get(0).status());
+        assertNull(a.trace().evaluations().get(0).score());
+    }
+
+    @Test
+    void firstAvailableStillAppliesTheHardConstraints() {
+        ParkingRequest request = standard(2.0, 6.0, PreferredLocation.ANY);
+        Proposal tooExpensive = offer("ZoneStandard", ZoneType.STANDARD, "ZoneStandard-01", 7.0, 60.0);
+        Proposal affordable = offer("ZonePremium", ZoneType.PREMIUM, "ZonePremium-01", 5.0, 15.0);
+
+        AllocationScorer.Result a = FIRST_AVAILABLE_SCORER.evaluateFirstAvailable(request,
+                List.of(tooExpensive, affordable), List.of(), Set.of());
+        assertEquals("ZonePremium", a.best().zoneId());
+
+        AllocationScorer.Result down = FIRST_AVAILABLE_SCORER.evaluateFirstAvailable(request,
+                List.of(affordable), List.of(), Set.of("ZonePremium"));
+        assertFalse(down.isAllocated());
+    }
+
+    @Test
+    void firstAvailableWithoutOfferGivesNoAllocation() {
+        ParkingRequest request = standard(2.0, 20.0, PreferredLocation.ANY);
+        AllocationScorer.Result a = FIRST_AVAILABLE_SCORER.evaluateFirstAvailable(request, List.of(),
+                List.of(new Refusal("R1", "ZoneStandard", RefusalReason.ZONE_FULL)), Set.of());
+
+        assertFalse(a.isAllocated());
+        assertEquals(1, a.trace().evaluations().size());
+    }
 }

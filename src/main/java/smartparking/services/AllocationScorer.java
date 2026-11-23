@@ -53,15 +53,23 @@ public class AllocationScorer {
     private final Map<String, ParkingConfig.Weights> weights;
     private final double distanceMax;
     private final double referenceBasePrice;
+    /** Ordre de priorité des zones pour la stratégie A (ordre du fichier de configuration). */
+    private final List<String> zoneOrder;
 
     public AllocationScorer(ParkingConfig config) {
         this(config.weights(),
                 config.zones().stream().mapToDouble(ParkingConfig.ZoneConfig::maxDistance).max().orElse(1.0),
-                config.zones().stream().mapToDouble(ParkingConfig.ZoneConfig::basePricePerHour).min().orElse(1.0));
+                config.zones().stream().mapToDouble(ParkingConfig.ZoneConfig::basePricePerHour).min().orElse(1.0),
+                config.zones().stream().map(ParkingConfig.ZoneConfig::zoneId).toList());
     }
 
     public AllocationScorer(Map<String, ParkingConfig.Weights> weights, double distanceMax,
                             double referenceBasePrice) {
+        this(weights, distanceMax, referenceBasePrice, List.of());
+    }
+
+    public AllocationScorer(Map<String, ParkingConfig.Weights> weights, double distanceMax,
+                            double referenceBasePrice, List<String> zoneOrder) {
         if (weights == null || !weights.containsKey(PROFILE_DEFAULT)
                 || !weights.containsKey(PROFILE_NEAR_EXIT) || !weights.containsKey(PROFILE_TIGHT_BUDGET)) {
             throw new IllegalArgumentException("les poids default, nearExit et tightBudget sont obligatoires");
@@ -72,6 +80,7 @@ public class AllocationScorer {
         this.weights = Map.copyOf(weights);
         this.distanceMax = distanceMax;
         this.referenceBasePrice = referenceBasePrice;
+        this.zoneOrder = List.copyOf(zoneOrder);
     }
 
     /** Nom du profil de poids : budget serré d'abord, puis proximité de la sortie, sinon défaut. */
@@ -129,15 +138,7 @@ public class AllocationScorer {
         }
 
         // 1. Filtre dur
-        List<Proposal> valid = new ArrayList<>();
-        for (Proposal proposal : proposals) {
-            String reason = eliminationReason(request, proposal, downZones);
-            if (reason == null) {
-                valid.add(proposal);
-            } else {
-                evaluations.add(eliminated(proposal, reason));
-            }
-        }
+        List<Proposal> valid = hardFilter(request, proposals, downZones, evaluations);
 
         // 2. Règle de non-gaspillage : une zone spécialisée inutile n'est qu'un repli exceptionnel
         boolean hasSuitable = valid.stream().anyMatch(p -> wastePenalty(request, p.zoneType()) < 1.0);
@@ -183,6 +184,61 @@ public class AllocationScorer {
                 best.proposal().slotId(), best.proposal().totalPrice(), best.score(), profile);
         return new Result(best.proposal(), best.score(),
                 new DecisionTrace(request.requestId(), evaluations, best.proposal().zoneId(), summary));
+    }
+
+    /**
+     * Stratégie A (FIRST_AVAILABLE) : mêmes contraintes obligatoires, mais aucun score. La première offre
+     * valable est retenue, en suivant l'ordre des zones du fichier de configuration (puis par place).
+     * Sert de référence « naïve » pour mesurer l'apport du score de la stratégie B.
+     */
+    public Result evaluateFirstAvailable(ParkingRequest request, List<Proposal> proposals,
+                                         List<Refusal> refusals, Set<String> downZones) {
+        List<OfferEvaluation> evaluations = new ArrayList<>();
+        for (Refusal refusal : refusals) {
+            evaluations.add(new OfferEvaluation(refusal.zoneId(), null, 0.0, null, STATUS_ELIMINATED,
+                    "refus de la zone : " + refusal.reason()));
+        }
+        List<Proposal> valid = new ArrayList<>(hardFilter(request, proposals, downZones, evaluations));
+        valid.sort(Comparator.<Proposal>comparingInt(p -> zoneRank(p.zoneId()))
+                .thenComparing(Proposal::zoneId)
+                .thenComparing(Proposal::slotId));
+
+        for (int i = 0; i < valid.size(); i++) {
+            Proposal p = valid.get(i);
+            evaluations.add(new OfferEvaluation(p.zoneId(), p.slotId(), p.totalPrice(), null,
+                    i == 0 ? STATUS_SELECTED : STATUS_NOT_SELECTED, null));
+        }
+        if (valid.isEmpty()) {
+            String summary = String.format(Locale.ROOT,
+                    "Demande %s : aucune offre valable (%d refus, %d offre(s) éliminée(s)).",
+                    request.requestId(), refusals.size(), proposals.size());
+            return new Result(null, 0.0, new DecisionTrace(request.requestId(), evaluations, null, summary));
+        }
+        Proposal first = valid.get(0);
+        String summary = String.format(Locale.ROOT,
+                "Demande %s : première offre valable retenue (stratégie FIRST_AVAILABLE) : %s, place %s, %.2f DT.",
+                request.requestId(), first.zoneId(), first.slotId(), first.totalPrice());
+        return new Result(first, 0.0, new DecisionTrace(request.requestId(), evaluations, first.zoneId(), summary));
+    }
+
+    private int zoneRank(String zoneId) {
+        int index = zoneOrder.indexOf(zoneId);
+        return index >= 0 ? index : Integer.MAX_VALUE;
+    }
+
+    /** Applique les contraintes obligatoires ; les offres écartées sont ajoutées à la trace avec leur motif. */
+    private List<Proposal> hardFilter(ParkingRequest request, List<Proposal> proposals, Set<String> downZones,
+                                      List<OfferEvaluation> evaluations) {
+        List<Proposal> valid = new ArrayList<>();
+        for (Proposal proposal : proposals) {
+            String reason = eliminationReason(request, proposal, downZones);
+            if (reason == null) {
+                valid.add(proposal);
+            } else {
+                evaluations.add(eliminated(proposal, reason));
+            }
+        }
+        return valid;
     }
 
     /** Contraintes obligatoires (§9.1) ; retourne le motif d'élimination, ou null si l'offre est valable. */
