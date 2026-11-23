@@ -5,31 +5,44 @@ import jade.core.ProfileImpl;
 import jade.core.Runtime;
 import jade.wrapper.AgentContainer;
 import smartparking.models.ParkingConfig;
+import smartparking.models.ParkingRequest;
+import smartparking.models.Scenario;
+import smartparking.services.ScenarioLoader;
 import smartparking.services.SimClock;
 import smartparking.utils.Config;
+
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
 /**
- * Point d'entrée : charge la configuration, installe l'horloge de simulation,
- * démarre le Main Container JADE puis les agents.
- * Options : --gui (ouvre le RMA), --sniffer (ouvre le Sniffer).
- * Étapes 0-1 : seul HelloAgent est lancé. Les vrais agents seront ajoutés aux étapes suivantes.
+ * Point d'entrée : charge la configuration, démarre le Main Container JADE, puis les agents
+ * (zones, Manager, véhicules du scénario).
+ * Options : --gui (ouvre le RMA), --sniffer (ouvre le Sniffer),
+ *           --scenario <fichier> (par défaut config/scenarios/s1_normal.json).
  */
 public class Launcher {
+
+    private static final String DEFAULT_SCENARIO = "config/scenarios/s1_normal.json";
 
     public static void main(String[] args) throws Exception {
         List<String> options = Arrays.asList(args);
         boolean gui = options.contains("--gui");
         boolean sniffer = options.contains("--sniffer");
+        int scenarioIndex = options.indexOf("--scenario");
+        String scenarioPath = scenarioIndex >= 0 && scenarioIndex + 1 < options.size()
+                ? options.get(scenarioIndex + 1) : DEFAULT_SCENARIO;
 
         ParkingConfig config = Config.load();
         System.out.println("[Launcher] configuration chargée : " + config.zones().size() + " zones, "
                 + config.totalSlots() + " places, stratégie " + config.strategy());
 
-        SimClock clock = new SimClock(config.timeScale());
-        SimClock.install(clock);
-        clock.start();
+        Scenario scenario = ScenarioLoader.load(Path.of(scenarioPath));
+        List<ParkingRequest> requests = ScenarioLoader.generate(scenario);
+        System.out.println("[Launcher] scénario " + scenario.name() + " : " + requests.size()
+                + " véhicules (graine " + scenario.seed() + ")");
+
+        SimClock.install(new SimClock(config.timeScale()));
 
         Runtime runtime = Runtime.instance();
         Profile profile = new ProfileImpl();
@@ -39,18 +52,27 @@ public class Launcher {
         AgentContainer container = runtime.createMainContainer(profile);
 
         if (sniffer) {
+            StringBuilder watched = new StringBuilder("manager;ZoneStandard;ZoneElectric;ZonePMR;ZonePremium");
+            for (ParkingRequest request : requests) {
+                watched.append(';').append(request.vehicleId());
+            }
             container.createNewAgent("sniffer", "jade.tools.sniffer.Sniffer",
-                    new Object[] {"ZoneStandard;ZoneElectric;ZonePMR;ZonePremium;tester"}).start();
+                    new Object[] {watched.toString()}).start();
         }
 
         for (ParkingConfig.ZoneConfig zone : config.zones()) {
             container.createNewAgent(zone.zoneId(), "smartparking.agents.ZoneAgent",
                     new Object[] {zone.zoneId()}).start();
         }
+        container.createNewAgent("manager", "smartparking.agents.ParkingManagerAgent", null).start();
 
-        if (options.contains("--test-cfp")) {
-            container.createNewAgent("tester", "smartparking.agents.TestInitiatorAgent", null).start();
+        // laisse aux zones le temps de s'enregistrer au DF, puis démarre l'horloge de simulation
+        Thread.sleep(1500);
+        SimClock.get().start();
+
+        for (ParkingRequest request : requests) {
+            container.createNewAgent(request.vehicleId(), "smartparking.agents.VehicleAgent",
+                    new Object[] {request}).start();
         }
-
     }
 }

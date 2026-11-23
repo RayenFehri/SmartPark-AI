@@ -10,3 +10,4 @@ results/*.csv
 secrets/
 APDescription.txt
 MTPs-Main-Container.txt
+run_*.log
