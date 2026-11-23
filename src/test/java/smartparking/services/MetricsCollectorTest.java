@@ -154,4 +154,25 @@ class MetricsCollectorTest {
         assertEquals(2, m.decidedCount());
         assertEquals(61.0, m.latestEndSimMin(), 1e-9);
     }
+
+    @Test
+    void queuedRequestsAndDistancesAreSummarized() {
+        MetricsCollector m = new MetricsCollector();
+        m.onEvent(received("R1", 0, 1.0));
+        m.onEvent(received("R2", 0, 2.0));
+        m.onEvent(event(EventTypes.QUEUED, "R2", null, 1, 2.0, null));
+        m.onEvent(event(EventTypes.QUEUED, "R2", null, 2, 2.0, null));   // doublon : compté une fois
+        m.onEvent(event(EventTypes.ALLOCATED, "R1", "Z", 5, 1.0,
+                "{\"slotId\":\"A-01\",\"price\":4.0,\"startSimMin\":1.0,\"endSimMin\":61.0,"
+                        + "\"distanceToExit\":60.0,\"nearExit\":false}"));
+        m.onEvent(event(EventTypes.ALLOCATED, "R2", "Z", 6, 3.0,
+                "{\"slotId\":\"A-02\",\"price\":4.0,\"startSimMin\":3.0,\"endSimMin\":63.0,"
+                        + "\"distanceToExit\":10.0,\"nearExit\":true}"));
+
+        MetricsCollector.Summary s = m.summary("S3", "CNP_OPTIMIZED", 1L);
+
+        assertEquals(1, s.queued());
+        assertEquals(35.0, s.avgDistanceToExit(), 1e-9);
+        assertEquals(10.0, s.avgDistanceNearExit(), 1e-9);
+    }
 }

@@ -23,10 +23,12 @@ import java.util.Map;
  *
  * Conventions des événements (champ details = JSON) :
  *  - REQUEST_SENT : reçu par le Manager (timestamp réel et simulé de réception)
- *  - ALLOCATED    : {zoneId, slotId, price, score, startSimMin, endSimMin, wasteful}
+ *  - ALLOCATED    : {zoneId, slotId, price, score, startSimMin, endSimMin, wasteful,
+ *                    distanceToExit, nearExit}
  *  - REFUSED      : {reason}
  *  - FAILED       : {reason}
  *  - CONFLICT     : un ACCEPT_PROPOSAL sur une place qui n'est plus réservée à ce véhicule (§10)
+ *  - QUEUED       : la demande est mise en file d'attente (saturation)
  *  - HEARTBEAT    : {used, usable} : places utilisées et utilisables de la zone (champ zoneId)
  */
 public class MetricsCollector {
@@ -36,7 +38,8 @@ public class MetricsCollector {
                           int requests, int allocated, int refused, int failed,
                           double satisfactionRate, double avgAssignmentMs, double avgWaitSimMin,
                           double avgOccupancy, int conflicts, double revenue,
-                          int unneededSpecialized, int doubleAllocations) { }
+                          int unneededSpecialized, int doubleAllocations,
+                          int queued, double avgDistanceToExit, double avgDistanceNearExit) { }
 
     private static final class Row {
         String outcome = "PENDING";
@@ -48,6 +51,8 @@ public class MetricsCollector {
         double receivedSimMin;
         long assignmentMs = -1;
         double waitSimMin = -1;
+        double distanceToExit;
+        boolean nearExitRequested;
     }
 
     private final Map<String, Row> rows = new LinkedHashMap<>();
@@ -55,6 +60,7 @@ public class MetricsCollector {
     private final Map<String, int[]> zoneLoad = new HashMap<>();
     private final List<Double> occupancySamples = new ArrayList<>();
     private final Map<String, Double> slotOccupiedUntil = new HashMap<>();
+    private final java.util.Set<String> queuedRequests = new java.util.HashSet<>();
 
     private int conflicts;
     private int unneededSpecialized;
@@ -76,6 +82,7 @@ public class MetricsCollector {
             case EventTypes.ALLOCATED -> onAllocated(event);
             case EventTypes.REFUSED -> rows.computeIfAbsent(event.requestId(), id -> new Row()).outcome = "REFUSED";
             case EventTypes.FAILED -> rows.computeIfAbsent(event.requestId(), id -> new Row()).outcome = "FAILED";
+            case EventTypes.QUEUED -> queuedRequests.add(event.requestId());
             case EventTypes.CONFLICT -> conflicts++;
             case EventTypes.HEARTBEAT -> onHeartbeat(event);
             default -> { }
@@ -90,6 +97,8 @@ public class MetricsCollector {
         row.slotId = text(details, "slotId");
         row.price = number(details, "price");
         row.score = number(details, "score");
+        row.distanceToExit = number(details, "distanceToExit");
+        row.nearExitRequested = Boolean.TRUE.equals(details.get("nearExit"));
         row.assignmentMs = Math.max(0, event.timestampRealMs() - row.receivedRealMs);
         row.waitSimMin = Math.max(0.0, event.timestampSimMin() - row.receivedSimMin);
         revenue += row.price;
@@ -146,12 +155,26 @@ public class MetricsCollector {
         int failed = 0;
         double assignmentSum = 0;
         double waitSum = 0;
-        for (Row row : rows.values()) {
+        double distanceSum = 0;
+        double nearExitDistanceSum = 0;
+        int nearExitCount = 0;
+        int direct = 0;
+        for (Map.Entry<String, Row> entry : rows.entrySet()) {
+            String id = entry.getKey();
+            Row row = entry.getValue();
             switch (row.outcome) {
                 case "ALLOCATED" -> {
                     allocated++;
-                    assignmentSum += row.assignmentMs;
+                    if (!queuedRequests.contains(id)) {
+                        assignmentSum += row.assignmentMs;
+                        direct++;
+                    }
                     waitSum += row.waitSimMin;
+                    distanceSum += row.distanceToExit;
+                    if (row.nearExitRequested) {
+                        nearExitDistanceSum += row.distanceToExit;
+                        nearExitCount++;
+                    }
                 }
                 case "REFUSED" -> refused++;
                 case "FAILED" -> failed++;
@@ -162,32 +185,36 @@ public class MetricsCollector {
         double occupancy = occupancySamples.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
         return new Summary(scenario, strategy, seed, requests, allocated, refused, failed,
                 requests == 0 ? 0.0 : (double) allocated / requests,
-                allocated == 0 ? 0.0 : assignmentSum / allocated,
+                direct == 0 ? 0.0 : assignmentSum / direct,
                 allocated == 0 ? 0.0 : waitSum / allocated,
-                occupancy, conflicts, revenue, unneededSpecialized, doubleAllocations);
+                occupancy, conflicts, revenue, unneededSpecialized, doubleAllocations,
+                queuedRequests.size(),
+                allocated == 0 ? 0.0 : distanceSum / allocated,
+                nearExitCount == 0 ? 0.0 : nearExitDistanceSum / nearExitCount);
     }
 
     public static String summaryHeader() {
         return "scenario,strategy,seed,requests,allocated,refused,failed,satisfaction_rate,"
                 + "avg_assignment_ms,avg_wait_sim_min,avg_occupancy,conflicts,revenue,"
-                + "unneeded_specialized,double_allocations";
+                + "unneeded_specialized,double_allocations,queued,avg_distance_exit,avg_distance_near_exit";
     }
 
     public static String summaryLine(Summary s) {
-        return String.format(Locale.ROOT, "%s,%s,%d,%d,%d,%d,%d,%.4f,%.2f,%.2f,%.4f,%d,%.2f,%d,%d",
+        return String.format(Locale.ROOT, "%s,%s,%d,%d,%d,%d,%d,%.4f,%.2f,%.2f,%.4f,%d,%.2f,%d,%d,%d,%.2f,%.2f",
                 s.scenario(), s.strategy(), s.seed(), s.requests(), s.allocated(), s.refused(), s.failed(),
                 s.satisfactionRate(), s.avgAssignmentMs(), s.avgWaitSimMin(), s.avgOccupancy(), s.conflicts(),
-                s.revenue(), s.unneededSpecialized(), s.doubleAllocations());
+                s.revenue(), s.unneededSpecialized(), s.doubleAllocations(), s.queued(),
+                s.avgDistanceToExit(), s.avgDistanceNearExit());
     }
 
     /** Détail par demande, au format CSV (une ligne par demande, dans l'ordre d'arrivée au Manager). */
     public synchronized List<String> detailLines() {
         List<String> lines = new ArrayList<>();
-        lines.add("request_id,outcome,zone_id,slot_id,price,score,assignment_ms,wait_sim_min");
+        lines.add("request_id,outcome,zone_id,slot_id,price,score,assignment_ms,wait_sim_min,distance_exit");
         for (Map.Entry<String, Row> entry : rows.entrySet()) {
             Row r = entry.getValue();
-            lines.add(String.format(Locale.ROOT, "%s,%s,%s,%s,%.2f,%.4f,%d,%.2f", entry.getKey(), r.outcome,
-                    r.zoneId, r.slotId, r.price, r.score, r.assignmentMs, r.waitSimMin));
+            lines.add(String.format(Locale.ROOT, "%s,%s,%s,%s,%.2f,%.4f,%d,%.2f,%.1f", entry.getKey(), r.outcome,
+                    r.zoneId, r.slotId, r.price, r.score, r.assignmentMs, r.waitSimMin, r.distanceToExit));
         }
         return lines;
     }

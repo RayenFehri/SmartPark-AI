@@ -1,5 +1,6 @@
 package smartparking.agents;
 
+import jade.core.AID;
 import jade.core.Agent;
 import jade.core.behaviours.TickerBehaviour;
 import jade.domain.DFService;
@@ -7,6 +8,7 @@ import jade.domain.FIPAAgentManagement.DFAgentDescription;
 import jade.domain.FIPAAgentManagement.Property;
 import jade.domain.FIPAAgentManagement.ServiceDescription;
 import jade.domain.FIPAException;
+import jade.lang.acl.ACLMessage;
 import smartparking.behaviours.EventReporter;
 import smartparking.behaviours.ZoneCnpResponder;
 import smartparking.models.ParkingConfig;
@@ -64,7 +66,8 @@ public class ZoneAgent extends Agent {
 
         registerInDf();
 
-        addBehaviour(new ZoneCnpResponder(this, zone, holdTtlMs, this::sendHeartbeat));
+        addBehaviour(new ZoneCnpResponder(this, zone, holdTtlMs, this::sendHeartbeat,
+                this::notifySlotReleased));
         addBehaviour(new TickerBehaviour(this, heartbeatMs) {
             @Override
             protected void onTick() {
@@ -97,7 +100,18 @@ public class ZoneAgent extends Agent {
         }
         if (changed) {
             sendHeartbeat();
+            notifySlotReleased();
         }
+    }
+
+    /** Prévient le Manager qu'une place est libre : il relance alors sa file d'attente. */
+    private void notifySlotReleased() {
+        ACLMessage message = new ACLMessage(ACLMessage.INFORM);
+        message.addReceiver(new AID(ParkingManagerAgent.MANAGER_NAME, AID.ISLOCALNAME));
+        message.setOntology(Ontology.NAME);
+        message.setLanguage(Ontology.LANGUAGE);
+        message.setContent(Ontology.SLOT_RELEASED);
+        send(message);
     }
 
     /**

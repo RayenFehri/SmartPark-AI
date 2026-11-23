@@ -121,6 +121,10 @@ public class MonitorAgent extends Agent {
                 "[monitor] revenu %.2f DT, conflits %d, places spécialisées sans besoin %d, "
                         + "doubles attributions %d",
                 s.revenue(), s.conflicts(), s.unneededSpecialized(), s.doubleAllocations()));
+        System.out.println(String.format(Locale.ROOT,
+                "[monitor] mises en file %d, distance moyenne à la sortie %.1f m "
+                        + "(véhicules NEAR_EXIT : %.1f m)",
+                s.queued(), s.avgDistanceToExit(), s.avgDistanceNearExit()));
         try {
             Path detail = collector.export(RESULTS_DIR, scenario, strategy, seed);
             System.out.println("[monitor] fichiers écrits : " + detail + " et " + RESULTS_DIR.resolve("summary.csv"));

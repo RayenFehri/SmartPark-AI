@@ -6,7 +6,7 @@
   "holdTtlMs": 5000,
   "heartbeatMs": 2000,
   "downAfterMissed": 3,
-  "queueMaxWaitSimMin": 30,
+  "queueMaxWaitSimMin": 180,
   "pricing": {
     "thresholds": [0.4, 0.7, 0.9],
     "surcharges": [0.0, 0.1, 0.2, 0.3]

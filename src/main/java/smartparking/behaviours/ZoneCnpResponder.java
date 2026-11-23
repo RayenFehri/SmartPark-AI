@@ -27,13 +27,19 @@ public class ZoneCnpResponder extends ContractNetResponder {
     private final long holdTtlMs;
     private final String name;
     private final Runnable onStateChange;
+    private final Runnable onSlotReleased;
 
-    /** onStateChange est appelé après chaque changement d'état des places (hold, confirmation, libération). */
-    public ZoneCnpResponder(Agent agent, ZoneState zone, long holdTtlMs, Runnable onStateChange) {
+    /**
+     * onStateChange est appelé après chaque changement d'état des places (hold, confirmation, libération) ;
+     * onSlotReleased quand une place réservée redevient libre (REJECT_PROPOSAL).
+     */
+    public ZoneCnpResponder(Agent agent, ZoneState zone, long holdTtlMs, Runnable onStateChange,
+                            Runnable onSlotReleased) {
         super(agent, template());
         this.zone = zone;
         this.holdTtlMs = holdTtlMs;
         this.onStateChange = onStateChange;
+        this.onSlotReleased = onSlotReleased;
         this.name = zone.getZoneId();
     }
 
@@ -108,6 +114,9 @@ public class ZoneCnpResponder extends ContractNetResponder {
         log(String.format("REJECT %s -> %s", request.requestId(),
                 released ? "place libérée" : "rien à libérer (déjà expirée)"));
         onStateChange.run();
+        if (released) {
+            onSlotReleased.run();
+        }
     }
 
     private ParkingRequest readRequest(ACLMessage message) {

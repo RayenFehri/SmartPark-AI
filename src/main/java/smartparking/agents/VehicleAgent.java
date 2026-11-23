@@ -80,6 +80,19 @@ public class VehicleAgent extends Agent {
                 doDelete();
             }
 
+            /**
+             * Le Manager répond AGREE puis REFUSE (cahier des charges, §8). Pour JADE, un REFUSE après un AGREE est
+             * hors séquence FIPA-Request : sans cette méthode, le refus serait ignoré et le véhicule attendrait
+             * jusqu'au délai de 10 s.
+             */
+            @Override
+            protected void handleOutOfSequence(ACLMessage message) {
+                if (message.getPerformative() == ACLMessage.REFUSE) {
+                    log("demande REFUSÉE " + message.getContent());
+                    doDelete();
+                }
+            }
+
             @Override
             protected void handleNotUnderstood(ACLMessage notUnderstood) {
                 log("demande non comprise par le Manager");

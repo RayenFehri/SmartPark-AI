@@ -7,10 +7,12 @@ import jade.domain.FIPANames;
 import jade.lang.acl.ACLMessage;
 import jade.proto.ContractNetInitiator;
 import smartparking.models.Allocation;
+import smartparking.models.Alternative;
 import smartparking.models.DecisionTrace;
 import smartparking.models.ParkingRequest;
 import smartparking.models.Proposal;
 import smartparking.models.Refusal;
+import smartparking.models.RefusalNotice;
 import smartparking.models.RefusalReason;
 import smartparking.models.Strategy;
 import smartparking.services.AllocationScorer;
@@ -38,12 +40,21 @@ import java.util.function.Supplier;
  */
 public class ManagerCnpInitiator extends ContractNetInitiator {
 
+    /** Informations sur la place attribuée, pour les métriques. */
+    public record AllocationInfo(boolean wasteful, double distanceToExit, boolean nearExitRequested) { }
+
     /** Ce que le Manager veut savoir du résultat de chaque négociation. */
     public interface Outcomes {
         void trace(DecisionTrace trace);
 
-        /** wasteful : la zone attribuée est une zone spécialisée dont le véhicule n'avait pas besoin. */
-        void allocated(Allocation allocation, boolean wasteful);
+        /** info.wasteful : zone spécialisée attribuée à un véhicule qui n'en avait pas besoin. */
+        void allocated(Allocation allocation, AllocationInfo info);
+
+        /** Toutes les zones compatibles sont pleines : le Manager met la demande en file d'attente (EF10). */
+        void queued(ParkingRequest request, ACLMessage vehicleRequest, int round);
+
+        /** Alternatives à proposer au véhicule dans un refus (autre durée, estimation d'attente). */
+        List<Alternative> alternatives(ParkingRequest request, RefusalReason reason);
 
         /** Un ACCEPT_PROPOSAL a échoué : la place n'était plus réservée à ce véhicule (§10). */
         void conflict(String requestId, String zoneId);
@@ -59,7 +70,8 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
                        Supplier<List<AID>> zoneFinder,
                        Supplier<Set<String>> downZones,
                        Outcomes outcomes,
-                       long cnpTimeoutMs) { }
+                       long cnpTimeoutMs,
+                       boolean queueEnabled) { }
 
     private static final int MAX_ATTEMPTS = 2;
 
@@ -67,6 +79,8 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
     private final ParkingRequest request;
     private final ACLMessage vehicleRequest;
     private final int attempt;
+    /** 0 pour la première négociation ; augmente à chaque relance depuis la file d'attente. */
+    private final int round;
 
     private Proposal best;
     private double bestScore;
@@ -74,22 +88,30 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
     private boolean finished;
 
     private ManagerCnpInitiator(Agent agent, ACLMessage cfp, Deps deps, ParkingRequest request,
-                                ACLMessage vehicleRequest, int attempt) {
+                                ACLMessage vehicleRequest, int attempt, int round) {
         super(agent, cfp);
         this.deps = deps;
         this.request = request;
         this.vehicleRequest = vehicleRequest;
         this.attempt = attempt;
+        this.round = round;
     }
 
-    /** Lance une négociation (tentative 1 ou 2). Répond tout de suite au véhicule s'il n'y a aucune zone. */
+    /** Négociation initiale d'une demande (tentative 1, pas encore passée par la file d'attente). */
     public static void launch(Agent agent, Deps deps, ParkingRequest request, ACLMessage vehicleRequest,
                               int attempt) {
+        launch(agent, deps, request, vehicleRequest, attempt, 0);
+    }
+
+    /**
+     * Lance une négociation (tentative 1 ou 2 ; round = nombre de relances depuis la file d'attente).
+     * Répond tout de suite au véhicule s'il n'y a aucune zone active.
+     */
+    public static void launch(Agent agent, Deps deps, ParkingRequest request, ACLMessage vehicleRequest,
+                              int attempt, int round) {
         List<AID> zones = deps.zoneFinder().get();
         if (zones.isEmpty()) {
-            sendToVehicle(agent, vehicleRequest, ACLMessage.REFUSE,
-                    JsonUtil.toJson(new Refusal(request.requestId(), null, RefusalReason.NO_SLOT)));
-            deps.outcomes().refused(request.requestId(), RefusalReason.NO_SLOT);
+            refuse(agent, deps, request, vehicleRequest, RefusalReason.NO_SLOT);
             return;
         }
 
@@ -97,14 +119,24 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
         cfp.setProtocol(FIPANames.InteractionProtocol.FIPA_CONTRACT_NET);
         cfp.setOntology(Ontology.NAME);
         cfp.setLanguage(Ontology.LANGUAGE);
-        // une conversation distincte par tentative, pour ne jamais mélanger deux négociations
-        cfp.setConversationId(attempt == 1 ? request.requestId() : request.requestId() + "#" + attempt);
+        // une conversation distincte par tentative et par relance, pour ne jamais mélanger deux négociations
+        cfp.setConversationId(request.requestId() + (round > 0 ? "@r" + round : "")
+                + (attempt > 1 ? "#" + attempt : ""));
         cfp.setContent(JsonUtil.toJson(request));
         cfp.setReplyByDate(new Date(System.currentTimeMillis() + deps.cnpTimeoutMs()));
         for (AID zone : zones) {
             cfp.addReceiver(zone);
         }
-        agent.addBehaviour(new ManagerCnpInitiator(agent, cfp, deps, request, vehicleRequest, attempt));
+        agent.addBehaviour(new ManagerCnpInitiator(agent, cfp, deps, request, vehicleRequest, attempt, round));
+    }
+
+    /** REFUSE vers le véhicule, avec le motif et des alternatives (§8), puis information du Manager. */
+    public static void refuse(Agent agent, Deps deps, ParkingRequest request, ACLMessage vehicleRequest,
+                              RefusalReason reason) {
+        RefusalNotice notice = new RefusalNotice(request.requestId(), reason,
+                deps.outcomes().alternatives(request, reason));
+        sendToVehicle(agent, vehicleRequest, ACLMessage.REFUSE, JsonUtil.toJson(notice));
+        deps.outcomes().refused(request.requestId(), reason);
     }
 
     @Override
@@ -153,10 +185,13 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
 
         if (!result.isAllocated()) {
             RefusalReason reason = refusalReason(proposals, refusals);
-            sendToVehicle(myAgent, vehicleRequest, ACLMessage.REFUSE,
-                    JsonUtil.toJson(new Refusal(request.requestId(), null, reason)));
-            deps.outcomes().refused(request.requestId(), reason);
             finished = true;
+            if (reason == RefusalReason.ZONE_FULL && deps.queueEnabled()) {
+                // saturation : pas de refus immédiat, la demande attend en file (FIFO, PMR prioritaire)
+                deps.outcomes().queued(request, vehicleRequest, round);
+            } else {
+                refuse(myAgent, deps, request, vehicleRequest, reason);
+            }
             return;
         }
         best = result.best();
@@ -176,8 +211,9 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
                     c.slotId(), c.price(), bestScore, c.startSimMin(), c.endSimMin());
             finished = true;
             sendToVehicle(myAgent, vehicleRequest, ACLMessage.INFORM, JsonUtil.toJson(allocation));
-            deps.outcomes().allocated(allocation,
-                    deps.scorer().wastePenalty(request, best.zoneType()) >= 1.0);
+            deps.outcomes().allocated(allocation, new AllocationInfo(
+                    deps.scorer().wastePenalty(request, best.zoneType()) >= 1.0, best.distanceToExit(),
+                    request.preferredLocation() == smartparking.models.PreferredLocation.NEAR_EXIT));
         } catch (JsonSyntaxException e) {
             fail("confirmation illisible de la zone");
         }
@@ -195,7 +231,7 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
         if (attempt < MAX_ATTEMPTS) {
             log("ÉCHEC de " + failure.getSender().getLocalName() + " (" + failure.getContent()
                     + ") -> nouvelle négociation");
-            launch(myAgent, deps, request, vehicleRequest, attempt + 1);
+            launch(myAgent, deps, request, vehicleRequest, attempt + 1, round);
         } else {
             sendToVehicle(myAgent, vehicleRequest, ACLMessage.FAILURE, "conflit : réservation expirée");
             deps.outcomes().failed(request.requestId(), "conflit après relance");
