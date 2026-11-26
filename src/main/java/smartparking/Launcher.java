@@ -14,19 +14,25 @@ import smartparking.utils.Config;
 
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Point d'entrée : charge la configuration, démarre le Main Container JADE, puis les agents
  * (zones, Manager, véhicules du scénario).
  * Options : --gui (ouvre le RMA), --sniffer (ouvre le Sniffer),
  *           --scenario <fichier> (par défaut config/scenarios/s1_normal.json),
- *           --strategy A|B (A = FIRST_AVAILABLE, B = CNP_OPTIMIZED ; par défaut celle de parking.json),
+ *           --strategy A|B|C (A = FIRST_AVAILABLE, B = CNP_OPTIMIZED, C = CNP_LLM ; par défaut celle de parking.json),
+ *           --explain (stratégie C : chaque véhicule demande à l'assistant pourquoi sa place lui a été attribuée),
  *           --auto-exit (quitte quand l'exécution est terminée, après l'export CSV).
  */
 public class Launcher {
 
     private static final String DEFAULT_SCENARIO = "config/scenarios/s1_normal.json";
+    private static final long PREPARSE_TIMEOUT_S = 180;
 
     public static void main(String[] args) throws Exception {
         List<String> options = Arrays.asList(args);
@@ -45,6 +51,7 @@ public class Launcher {
         Strategy strategy = resolveStrategy(strategyOption, config.strategy());
         // lu par le ParkingManagerAgent : l'option remplace la valeur du fichier de configuration
         System.setProperty("smartpark.strategy", strategy.name());
+        System.setProperty("smartpark.explain", String.valueOf(options.contains("--explain")));
         System.out.println("[Launcher] configuration chargée : " + config.zones().size() + " zones, "
                 + config.totalSlots() + " places, stratégie " + strategy);
 
@@ -80,6 +87,21 @@ public class Launcher {
         }
         container.createNewAgent("manager", "smartparking.agents.ParkingManagerAgent", null).start();
 
+        // stratégie C : l'assistant comprend toutes les phrases AVANT le début de la simulation, pour que la latence
+        // du LLM (en secondes réelles) ne décale pas les arrivées simulées et ne fausse pas la comparaison avec B
+        if (strategy == Strategy.CNP_LLM) {
+            Map<String, ParkingRequest> originals = new LinkedHashMap<>();
+            requests.forEach(r -> originals.put(r.requestId(), r));
+            CountDownLatch ready = new CountDownLatch(1);
+            container.createNewAgent("assistant", "smartparking.agents.LLMAssistantAgent",
+                    new Object[] {originals, ready}).start();
+            System.out.println("[Launcher] pré-analyse de " + originals.size() + " phrases par l'assistant...");
+            if (!ready.await(PREPARSE_TIMEOUT_S, TimeUnit.SECONDS)) {
+                System.out.println("[Launcher] pré-analyse incomplète après " + PREPARSE_TIMEOUT_S
+                        + " s : les phrases restantes seront comprises à l'arrivée");
+            }
+        }
+
         // laisse aux zones le temps de s'enregistrer au DF, puis démarre l'horloge de simulation
         Thread.sleep(1500);
         SimClock.get().start();
@@ -104,6 +126,8 @@ public class Launcher {
                 return Strategy.FIRST_AVAILABLE;
             case "B":
                 return Strategy.CNP_OPTIMIZED;
+            case "C":
+                return Strategy.CNP_LLM;
             default:
                 try {
                     return Strategy.valueOf(option.toUpperCase());

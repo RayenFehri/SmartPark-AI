@@ -38,5 +38,7 @@ public final class EventTypes {
     public static final String LLM_CALL = "LLM_CALL";
     public static final String LLM_FALLBACK = "LLM_FALLBACK";
     public static final String TOOL_CALL = "TOOL_CALL";
+    /** Une explication (EXPLAIN) a été remise ou abandonnée : le Monitor attend ces fins avant de s'arrêter. */
+    public static final String EXPLAIN_DONE = "EXPLAIN_DONE";
     public static final String TOOL_REFUSED = "TOOL_REFUSED";
 }

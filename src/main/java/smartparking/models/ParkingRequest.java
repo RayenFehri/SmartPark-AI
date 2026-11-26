@@ -27,6 +27,12 @@ public record ParkingRequest(
         PreferredLocation preferredLocation,
         long arrivalSimMin) {
 
+    /** Retourne une copie avec l'instant d'arrivée imposé (le texte libre ne le contient pas). */
+    public ParkingRequest withArrival(long newArrivalSimMin) {
+        return new ParkingRequest(requestId, vehicleId, duration, maxBudget, vehicleType,
+                requiresCharging, requiresPmr, priority, preferredLocation, newArrivalSimMin);
+    }
+
     /** Retourne une copie avec les identifiants renseignés (le parseur ne les connaît pas). */
     public ParkingRequest withIds(String newRequestId, String newVehicleId) {
         return new ParkingRequest(newRequestId, newVehicleId, duration, maxBudget, vehicleType,

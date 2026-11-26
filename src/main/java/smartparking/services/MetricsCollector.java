@@ -41,6 +41,18 @@ public class MetricsCollector {
                           int unneededSpecialized, int doubleAllocations,
                           int queued, double avgDistanceToExit, double avgDistanceNearExit) { }
 
+    /**
+     * Mesures de la couche LLM (stratégie C), hors summary.csv : appels, replis sur les règles, phrases mal comprises,
+     * appels d'outils et latences moyennes.
+     */
+    public record LlmStats(int parseCalls, int parsedByRules, int mismatchedRequests, int reactCalls,
+                           int fallbacks, int toolCalls, int toolRefused,
+                           double avgParseLatencyMs, double avgReactLatencyMs) {
+        public boolean isEmpty() {
+            return parseCalls == 0 && reactCalls == 0 && toolCalls == 0 && toolRefused == 0;
+        }
+    }
+
     private static final class Row {
         String outcome = "PENDING";
         String zoneId = "";
@@ -62,11 +74,22 @@ public class MetricsCollector {
     private final Map<String, Double> slotOccupiedUntil = new HashMap<>();
     private final java.util.Set<String> queuedRequests = new java.util.HashSet<>();
 
+    private int parseCalls;
+    private int parsedByRules;
+    private int mismatchedRequests;
+    private int reactCalls;
+    private int llmFallbacks;
+    private int toolCalls;
+    private int toolRefused;
+    private double parseLatencySum;
+    private double reactLatencySum;
+
     private int conflicts;
     private int unneededSpecialized;
     private int doubleAllocations;
     private double revenue;
     private double latestEndSimMin;
+    private int explainDone;
 
     /** Enregistre un événement. Les événements inconnus ou mal formés sont ignorés. */
     public synchronized void onEvent(Event event) {
@@ -85,8 +108,37 @@ public class MetricsCollector {
             case EventTypes.QUEUED -> queuedRequests.add(event.requestId());
             case EventTypes.CONFLICT -> conflicts++;
             case EventTypes.HEARTBEAT -> onHeartbeat(event);
+            case EventTypes.LLM_CALL -> onLlmCall(event);
+            case EventTypes.LLM_FALLBACK -> llmFallbacks++;
+            case EventTypes.TOOL_CALL -> toolCalls++;
+            case EventTypes.EXPLAIN_DONE -> explainDone++;
+            case EventTypes.TOOL_REFUSED -> toolRefused++;
             default -> { }
         }
+    }
+
+    private void onLlmCall(Event event) {
+        Map<?, ?> details = parse(event.details());
+        double latency = number(details, "latencyMs");
+        if ("react".equals(details.get("purpose"))) {
+            reactCalls++;
+            reactLatencySum += latency;
+            return;
+        }
+        parseCalls++;
+        parseLatencySum += latency;
+        if ("FALLBACK".equals(details.get("source"))) {
+            parsedByRules++;
+        }
+        if (details.get("mismatches") instanceof List<?> list && !list.isEmpty()) {
+            mismatchedRequests++;
+        }
+    }
+
+    public synchronized LlmStats llmStats() {
+        return new LlmStats(parseCalls, parsedByRules, mismatchedRequests, reactCalls, llmFallbacks, toolCalls,
+                toolRefused, parseCalls == 0 ? 0.0 : parseLatencySum / parseCalls,
+                reactCalls == 0 ? 0.0 : reactLatencySum / reactCalls);
     }
 
     private void onAllocated(Event event) {
@@ -134,6 +186,14 @@ public class MetricsCollector {
     }
 
     /** Nombre de demandes ayant reçu une décision finale (attribuée, refusée ou en échec). */
+    public synchronized int explainDoneCount() {
+        return explainDone;
+    }
+
+    public synchronized int allocatedCount() {
+        return (int) rows.values().stream().filter(r -> "ALLOCATED".equals(r.outcome)).count();
+    }
+
     public synchronized int decidedCount() {
         int decided = 0;
         for (Row row : rows.values()) {

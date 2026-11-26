@@ -50,6 +50,8 @@ public class MonitorAgent extends Agent {
     private int expectedRequests;
     private boolean autoExit;
     private boolean finished;
+    private long explainWaitSinceMs;
+    private static final long EXPLAIN_WAIT_MS = 45_000;
 
     // surveillance des zones
     private long silenceLimitMs = Long.MAX_VALUE;
@@ -193,6 +195,17 @@ public class MonitorAgent extends Agent {
         if (SimClock.get().nowSimMin() < collector.latestEndSimMin()) {
             return;   // des véhicules sont encore garés
         }
+        if (Boolean.getBoolean("smartpark.explain") && collector.explainDoneCount() < collector.allocatedCount()) {
+            long now = System.currentTimeMillis();
+            if (explainWaitSinceMs == 0) {
+                explainWaitSinceMs = now;
+            }
+            if (now - explainWaitSinceMs < EXPLAIN_WAIT_MS) {
+                return;   // des explications du LLM sont encore en cours
+            }
+            System.out.println("[monitor] " + (collector.allocatedCount() - collector.explainDoneCount())
+                    + " explication(s) non terminée(s) après " + EXPLAIN_WAIT_MS / 1000 + " s, arrêt quand même");
+        }
         finished = true;
         printAndExport();
         if (autoExit) {
@@ -225,6 +238,14 @@ public class MonitorAgent extends Agent {
                 "[monitor] mises en file %d, distance moyenne à la sortie %.1f m "
                         + "(véhicules NEAR_EXIT : %.1f m)",
                 s.queued(), s.avgDistanceToExit(), s.avgDistanceNearExit()));
+        MetricsCollector.LlmStats llm = collector.llmStats();
+        if (!llm.isEmpty()) {
+            System.out.println(String.format(Locale.ROOT,
+                    "[monitor] LLM : %d phrases analysées (%d par les règles, %d mal comprises, latence moyenne %.0f ms), "
+                            + "%d appels ReAct (%.0f ms), %d replis, %d appels d'outils, %d outils refusés",
+                    llm.parseCalls(), llm.parsedByRules(), llm.mismatchedRequests(), llm.avgParseLatencyMs(),
+                    llm.reactCalls(), llm.avgReactLatencyMs(), llm.fallbacks(), llm.toolCalls(), llm.toolRefused()));
+        }
         if (downDetections > 0) {
             System.out.println(String.format(Locale.ROOT,
                     "[monitor] pannes détectées %d, délai moyen de détection %.1f min simulées, "

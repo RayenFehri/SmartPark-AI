@@ -17,6 +17,9 @@ import smartparking.behaviours.ManagerCnpInitiator;
 import smartparking.models.Allocation;
 import smartparking.models.Alternative;
 import smartparking.models.DecisionTrace;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
 import smartparking.models.ParkingConfig;
 import smartparking.models.ParkingRequest;
 import smartparking.models.Priority;
@@ -25,6 +28,9 @@ import smartparking.models.Strategy;
 import smartparking.models.ZoneType;
 import smartparking.services.AllocationScorer;
 import smartparking.services.AlternativeAdvisor;
+import smartparking.services.ManagerView;
+import smartparking.services.PricingPolicy;
+import smartparking.services.ToolRegistry;
 import smartparking.services.SimClock;
 import smartparking.services.WaitQueue;
 import smartparking.utils.Config;
@@ -39,6 +45,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -88,6 +95,7 @@ public class ParkingManagerAgent extends Agent {
 
     private ManagerCnpInitiator.Deps deps;
     private AlternativeAdvisor advisor;
+    private ToolRegistry toolRegistry;
 
     @Override
     protected void setup() {
@@ -103,10 +111,6 @@ public class ParkingManagerAgent extends Agent {
         // la stratégie du fichier de configuration peut être remplacée par l'option --strategy du Launcher
         Strategy strategy = Strategy.valueOf(
                 System.getProperty("smartpark.strategy", config.strategy().name()));
-        if (strategy == Strategy.CNP_LLM) {
-            System.err.println("[Manager] la stratégie CNP_LLM n'existe pas encore (étape 7) : CNP_OPTIMIZED utilisée");
-            strategy = Strategy.CNP_OPTIMIZED;
-        }
 
         queueMaxWaitSimMin = config.queueMaxWaitSimMin();
         advisor = new AlternativeAdvisor(config);
@@ -117,6 +121,8 @@ public class ParkingManagerAgent extends Agent {
                 (zoneId, request) -> zoneTypes.containsKey(zoneId)
                         && AlternativeAdvisor.isCompatible(request, zoneTypes.get(zoneId)));
 
+        toolRegistry = new ToolRegistry(new ManagerStateView(config), new PricingPolicy(config.pricing()));
+        addBehaviour(new ToolRequestListener());
         addBehaviour(new RequestListener());
         addBehaviour(new SlotReleasedListener());
         addBehaviour(new ZoneHealthListener());
@@ -217,6 +223,108 @@ public class ParkingManagerAgent extends Agent {
                         SimClock.get().nowSimMin()));
                 retryRequested = true;
             }
+        }
+    }
+
+    /**
+     * Outils de l'assistant LLM (ontologie smartpark-tools) : REQUEST {"tool": ..., "args": {...}} -> INFORM avec
+     * l'observation JSON, ou REFUSE si l'outil n'est pas dans la liste blanche ou si les arguments sont invalides.
+     */
+    private class ToolRequestListener extends CyclicBehaviour {
+
+        private final MessageTemplate template = MessageTemplate.and(
+                MessageTemplate.MatchPerformative(ACLMessage.REQUEST),
+                MessageTemplate.MatchOntology(Ontology.TOOLS));
+
+        @Override
+        public void action() {
+            ACLMessage message = myAgent.receive(template);
+            if (message == null) {
+                block();
+                return;
+            }
+            String tool = null;
+            JsonObject args = new JsonObject();
+            try {
+                JsonObject content = JsonParser.parseString(message.getContent()).getAsJsonObject();
+                tool = content.has("tool") ? content.get("tool").getAsString() : null;
+                if (content.has("args") && content.get("args").isJsonObject()) {
+                    args = content.getAsJsonObject("args");
+                }
+            } catch (JsonParseException | IllegalStateException | NullPointerException e) {
+                // contenu illisible : traité comme un outil inconnu ci-dessous
+            }
+            String problem = toolRegistry.validate(tool, args);
+            ACLMessage reply = message.createReply();
+            reply.setOntology(Ontology.TOOLS);
+            reply.setLanguage(Ontology.LANGUAGE);
+            String requestId = args.has("requestId") && args.get("requestId").isJsonPrimitive()
+                    ? args.get("requestId").getAsString() : null;
+            if (problem != null) {
+                reply.setPerformative(ACLMessage.REFUSE);
+                reply.setContent(JsonUtil.toJson(Map.of("error", problem)));
+                EventReporter.report(myAgent, EventTypes.TOOL_REFUSED, requestId, null,
+                        Map.of("tool", String.valueOf(tool), "reason", problem));
+                System.out.println("[Manager] outil refusé (" + tool + ") : " + problem);
+            } else {
+                reply.setPerformative(ACLMessage.INFORM);
+                reply.setContent(toolRegistry.execute(tool, args));
+                EventReporter.report(myAgent, EventTypes.TOOL_CALL, requestId, null, Map.of("tool", tool));
+                System.out.println("[Manager] outil " + tool + " " + args);
+            }
+            myAgent.send(reply);
+        }
+    }
+
+    /** Vue en lecture seule de l'état du Manager, utilisée par les outils. */
+    private class ManagerStateView implements ManagerView {
+
+        private final ParkingConfig config;
+
+        ManagerStateView(ParkingConfig config) {
+            this.config = config;
+        }
+
+        @Override
+        public double nowSimMin() {
+            return SimClock.get().nowSimMin();
+        }
+
+        @Override
+        public Optional<DecisionTrace> decision(String requestId) {
+            return Optional.ofNullable(traces.get(requestId));
+        }
+
+        @Override
+        public List<ParkingConfig.ZoneConfig> zones() {
+            return config.zones();
+        }
+
+        @Override
+        public int occupiedSlots(String zoneId) {
+            double now = SimClock.get().nowSimMin();
+            return (int) endsByZone.getOrDefault(zoneId, List.of()).stream().filter(end -> end > now).count();
+        }
+
+        @Override
+        public boolean isDown(String zoneId) {
+            return downZones.contains(zoneId);
+        }
+
+        @Override
+        public int queuePosition(String requestId) {
+            List<WaitQueue.Entry<QueuedRequest>> ordered = queue.ordered();
+            for (int i = 0; i < ordered.size(); i++) {
+                if (ordered.get(i).id().equals(requestId)) {
+                    return i + 1;
+                }
+            }
+            return inFlight.containsKey(requestId) ? 0 : -1;
+        }
+
+        @Override
+        public int queueSize() {
+            return queue.size() + inFlight.size();
         }
     }
 
