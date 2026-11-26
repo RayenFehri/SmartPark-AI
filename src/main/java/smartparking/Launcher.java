@@ -84,6 +84,10 @@ public class Launcher {
         Thread.sleep(1500);
         SimClock.get().start();
 
+        if (scenario.faults() != null && !scenario.faults().isEmpty()) {
+            container.createNewAgent("injector", "smartparking.agents.FaultInjectorAgent",
+                    new Object[] {scenario.faults()}).start();
+        }
         for (ParkingRequest request : requests) {
             container.createNewAgent(request.vehicleId(), "smartparking.agents.VehicleAgent",
                     new Object[] {request}).start();

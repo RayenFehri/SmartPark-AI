@@ -22,6 +22,7 @@ import smartparking.models.ParkingRequest;
 import smartparking.models.Priority;
 import smartparking.models.RefusalReason;
 import smartparking.models.Strategy;
+import smartparking.models.ZoneType;
 import smartparking.services.AllocationScorer;
 import smartparking.services.AlternativeAdvisor;
 import smartparking.services.SimClock;
@@ -50,7 +51,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * quand une zone signale une place libre (et au moins une fois par seconde). Au-delà de l'attente maximale,
  * le véhicule est refusé avec des alternatives.
  *
- * Pas encore traité (étape 5B) : détection de panne des zones.
+ * Pannes (étape 5B) : le Monitor surveille les signes de vie des zones et prévient le Manager
+ * (INFORM ZONE_DOWN:<zone> / ZONE_UP:<zone>, ontologie smartpark-control). Une zone DOWN n'est plus interrogée ;
+ * les demandes qui ne peuvent être servies pendant ce temps attendent en file, relancée au retour de la zone.
  */
 public class ParkingManagerAgent extends Agent {
 
@@ -107,11 +110,16 @@ public class ParkingManagerAgent extends Agent {
 
         queueMaxWaitSimMin = config.queueMaxWaitSimMin();
         advisor = new AlternativeAdvisor(config);
+        Map<String, ZoneType> zoneTypes = new HashMap<>();
+        config.zones().forEach(z -> zoneTypes.put(z.zoneId(), z.type()));
         deps = new ManagerCnpInitiator.Deps(strategy, new AllocationScorer(config), this::findZones,
-                () -> downZones, new ManagerOutcomes(), config.cnpTimeoutMs(), queueMaxWaitSimMin > 0);
+                () -> downZones, new ManagerOutcomes(), config.cnpTimeoutMs(), queueMaxWaitSimMin > 0,
+                (zoneId, request) -> zoneTypes.containsKey(zoneId)
+                        && AlternativeAdvisor.isCompatible(request, zoneTypes.get(zoneId)));
 
         addBehaviour(new RequestListener());
         addBehaviour(new SlotReleasedListener());
+        addBehaviour(new ZoneHealthListener());
         addBehaviour(new WaitQueueTicker(this));
         System.out.println("[Manager] prêt, stratégie " + strategy + ", attente maximale "
                 + queueMaxWaitSimMin + " min simulées");
@@ -176,6 +184,39 @@ public class ParkingManagerAgent extends Agent {
                 return;
             }
             retryRequested = true;
+        }
+    }
+
+    /** Reçoit ZONE_DOWN / ZONE_UP du Monitor et met à jour l'ensemble des zones indisponibles. */
+    private class ZoneHealthListener extends CyclicBehaviour {
+        private final MessageTemplate template = MessageTemplate.and(
+                MessageTemplate.MatchPerformative(ACLMessage.INFORM),
+                MessageTemplate.MatchOntology(Ontology.CONTROL));
+
+        @Override
+        public void action() {
+            ACLMessage message = myAgent.receive(template);
+            if (message == null) {
+                block();
+                return;
+            }
+            String content = message.getContent() == null ? "" : message.getContent();
+            int separator = content.indexOf(':');
+            if (separator < 0) {
+                return;
+            }
+            String command = content.substring(0, separator);
+            String zoneId = content.substring(separator + 1);
+            if (Ontology.ZONE_DOWN.equals(command) && downZones.add(zoneId)) {
+                System.out.println(String.format(Locale.ROOT,
+                        "[Manager] %s signalée EN PANNE (t = %.0f min) : exclue des appels d'offres", zoneId,
+                        SimClock.get().nowSimMin()));
+            } else if (Ontology.ZONE_UP.equals(command) && downZones.remove(zoneId)) {
+                System.out.println(String.format(Locale.ROOT,
+                        "[Manager] %s de retour (t = %.0f min) : réintégrée, file d'attente relancée", zoneId,
+                        SimClock.get().nowSimMin()));
+                retryRequested = true;
+            }
         }
     }
 

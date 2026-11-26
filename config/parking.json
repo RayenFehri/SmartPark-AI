@@ -4,7 +4,7 @@
   "timeScale": 20.0,
   "cnpTimeoutMs": 2000,
   "holdTtlMs": 5000,
-  "heartbeatMs": 2000,
+  "heartbeatMs": 250,
   "downAfterMissed": 3,
   "queueMaxWaitSimMin": 180,
   "pricing": {

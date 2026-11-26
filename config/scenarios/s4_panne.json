@@ -1,6 +1,6 @@
 {
   "name": "S4",
-  "seed": 1,
+  "seed": 3,
   "vehicleCount": 20,
   "arrivalWindowSimMin": 120,
   "electricRatio": 0.2,

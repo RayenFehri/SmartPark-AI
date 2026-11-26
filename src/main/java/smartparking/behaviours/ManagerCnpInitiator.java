@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Vector;
+import java.util.function.BiPredicate;
 import java.util.function.Supplier;
 
 /**
@@ -71,7 +72,8 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
                        Supplier<Set<String>> downZones,
                        Outcomes outcomes,
                        long cnpTimeoutMs,
-                       boolean queueEnabled) { }
+                       boolean queueEnabled,
+                       BiPredicate<String, ParkingRequest> zoneCanServe) { }
 
     private static final int MAX_ATTEMPTS = 2;
 
@@ -81,6 +83,10 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
     private final int attempt;
     /** 0 pour la première négociation ; augmente à chaque relance depuis la file d'attente. */
     private final int round;
+    /** Zones interrogées : une zone qui ne répond pas avant le délai est considérée comme indisponible. */
+    private final List<String> contactedZones;
+    /** Vrai si une zone compatible était déjà connue en panne au lancement (donc absente de ce CFP). */
+    private final boolean downAtLaunch;
 
     private Proposal best;
     private double bestScore;
@@ -88,13 +94,16 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
     private boolean finished;
 
     private ManagerCnpInitiator(Agent agent, ACLMessage cfp, Deps deps, ParkingRequest request,
-                                ACLMessage vehicleRequest, int attempt, int round) {
+                                ACLMessage vehicleRequest, int attempt, int round, List<String> contactedZones,
+                                boolean downAtLaunch) {
         super(agent, cfp);
         this.deps = deps;
         this.request = request;
         this.vehicleRequest = vehicleRequest;
         this.attempt = attempt;
         this.round = round;
+        this.contactedZones = contactedZones;
+        this.downAtLaunch = downAtLaunch;
     }
 
     /** Négociation initiale d'une demande (tentative 1, pas encore passée par la file d'attente). */
@@ -111,7 +120,13 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
                               int attempt, int round) {
         List<AID> zones = deps.zoneFinder().get();
         if (zones.isEmpty()) {
-            refuse(agent, deps, request, vehicleRequest, RefusalReason.NO_SLOT);
+            if (deps.queueEnabled() && deps.downZones().get().stream()
+                    .anyMatch(z -> deps.zoneCanServe().test(z, request))) {
+                // toutes les zones sont en panne : la demande attend leur retour
+                deps.outcomes().queued(request, vehicleRequest, round);
+            } else {
+                refuse(agent, deps, request, vehicleRequest, RefusalReason.NO_SLOT);
+            }
             return;
         }
 
@@ -127,7 +142,9 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
         for (AID zone : zones) {
             cfp.addReceiver(zone);
         }
-        agent.addBehaviour(new ManagerCnpInitiator(agent, cfp, deps, request, vehicleRequest, attempt, round));
+        agent.addBehaviour(new ManagerCnpInitiator(agent, cfp, deps, request, vehicleRequest, attempt, round,
+                zones.stream().map(AID::getLocalName).toList(),
+                deps.downZones().get().stream().anyMatch(z -> deps.zoneCanServe().test(z, request))));
     }
 
     /** REFUSE vers le véhicule, avec le motif et des alternatives (§8), puis information du Manager. */
@@ -186,7 +203,20 @@ public class ManagerCnpInitiator extends ContractNetInitiator {
         if (!result.isAllocated()) {
             RefusalReason reason = refusalReason(proposals, refusals);
             finished = true;
-            if (reason == RefusalReason.ZONE_FULL && deps.queueEnabled()) {
+            // mode dégradé : une zone est en panne connue (DOWN) ou n'a pas répondu à temps. La demande peut
+            // être servie à son retour, donc elle attend en file au lieu d'être refusée tout de suite.
+            // (seules comptent les zones en panne ou silencieuses qui auraient pu servir ce véhicule)
+            Set<String> answered = new HashSet<>();
+            for (Object o : responses) {
+                answered.add(((ACLMessage) o).getSender().getLocalName());
+            }
+            boolean silentCompatible = contactedZones.stream()
+                    .anyMatch(z -> !answered.contains(z) && deps.zoneCanServe().test(z, request));
+            boolean downNow = deps.downZones().get().stream().anyMatch(z -> deps.zoneCanServe().test(z, request));
+            boolean degraded = downAtLaunch || downNow || silentCompatible;
+            boolean waitForZones = degraded && (reason == RefusalReason.NO_SLOT
+                    || reason == RefusalReason.BUDGET_EXCEEDED);
+            if ((reason == RefusalReason.ZONE_FULL || waitForZones) && deps.queueEnabled()) {
                 // saturation : pas de refus immédiat, la demande attend en file (FIFO, PMR prioritaire)
                 deps.outcomes().queued(request, vehicleRequest, round);
             } else {

@@ -17,6 +17,9 @@ public final class Ontology {
     /** Ontologie des requêtes d'outils de l'assistant LLM vers le Manager. */
     public static final String TOOLS = "smartpark-tools";
 
+    /** Ontologie des messages de contrôle : injection de panne, ZONE_DOWN / ZONE_UP (contenu "ZONE_DOWN:<zone>"). */
+    public static final String CONTROL = "smartpark-control";
+
     /** Service enregistré par les zones au DF. */
     public static final String ZONE_SERVICE_TYPE = "parking-zone";
     /** Propriété du service DF indiquant le type de zone. */
